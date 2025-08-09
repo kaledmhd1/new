@@ -109,7 +109,7 @@ def send_like():
     except Exception as e:
         return jsonify({"error": f"Failed to fetch tokens: {e}"}), 500
 
-    tokens = random.sample(tokens, min(120, len(tokens)))
+    tokens = random.sample(tokens, min(110, len(tokens)))
 
     encrypted_id = Encrypt_ID(player_uid)
     encrypted_api_data = encrypt_api(f"08{encrypted_id}1007")
