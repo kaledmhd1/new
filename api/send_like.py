@@ -118,7 +118,7 @@ def send_like():
     results = []
     failed_tokens = set()
     likes_sent = 0
-    max_likes = 120
+    max_likes = 100
 
     def worker(token):
         nonlocal likes_sent
