@@ -4,7 +4,6 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-import random  # استيراد random للخلط
 
 app = Flask(__name__)
 
@@ -97,14 +96,12 @@ def send_like():
     if not tokens:
         return jsonify({"error": "No tokens found"}), 500
 
-    random.shuffle(tokens)  # خلط التوكنات عشوائياً
-
     encrypted_id = Encrypt_ID(player_uid)
     encrypted_api_data = encrypt_api(f"08{encrypted_id}1007")
     TARGET = bytes.fromhex(encrypted_api_data)
 
     success_count = 0
-    max_success = 127
+    max_success = 100
     daily_limit_reached = False
     results = []
 
@@ -133,3 +130,4 @@ def send_like():
         "daily_limit_reached": daily_limit_reached,
         "details": results
     })
+
