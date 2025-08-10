@@ -5,10 +5,12 @@ from Crypto.Util.Padding import pad
 from concurrent.futures import ThreadPoolExecutor
 import random
 import time
+import threading
 
 app = Flask(__name__)
 
 last_sent_cache = {}
+lock = threading.Lock()
 
 def Encrypt_ID(x):
     x = int(x)
@@ -57,22 +59,11 @@ def send_like_request(token, TARGET):
     try:
         resp = httpx.post(url, headers=headers, data=TARGET, verify=False, timeout=10)
         if resp.status_code == 200:
-            try:
-                res_json = resp.json()
-                daily_limit = res_json.get("stats", {}).get("daily_limited_reached", False)
-                success = res_json.get("stats", {}).get("success", False)
-            except:
-                daily_limit = False
-                success = True
-            return {
-                "token": token[:20] + "...",
-                "status": "success" if success else "failed",
-                "daily_limit": daily_limit
-            }
+            return {"token": token[:20] + "...", "status": "success"}
         else:
-            return {"token": token[:20] + "...", "status": f"failed ({resp.status_code})", "daily_limit": False}
+            return {"token": token[:20] + "...", "status": f"failed ({resp.status_code})"}
     except httpx.RequestError as e:
-        return {"token": token[:20] + "...", "status": f"error ({e})", "daily_limit": False}
+        return {"token": token[:20] + "...", "status": f"error ({e})"}
 
 @app.route("/send_like", methods=["GET"])
 def send_like():
@@ -90,7 +81,7 @@ def send_like():
     last_sent = last_sent_cache.get(player_id_int, 0)
     seconds_since_last = now - last_sent
 
-    if seconds_since_last < 86400:
+    if seconds_since_last < 86400:  # 24 ساعة = 86400 ثانية
         remaining = int(86400 - seconds_since_last)
         return jsonify({
             "error": "Likes already sent within last 24 hours",
@@ -107,11 +98,11 @@ def send_like():
         basic_info = info_json.get("basicInfo", {})
         player_name = basic_info.get("nickname", "Unknown")
         player_uid = basic_info.get("accountId", player_id_int)
-        likes_before = basic_info.get("liked", 0)
+        likes_before = basic_info.get("liked", 0)  # عدّل هنا حسب رد API
     except Exception as e:
         return jsonify({"error": f"Error fetching player info: {e}"}), 500
 
-    # جلب كل التوكنات
+    # جلب التوكنات من API
     try:
         token_data = httpx.get("https://auto-token-bngx.onrender.com/api/get_jwt", timeout=15).json()
         tokens = token_data.get("tokens", [])
@@ -126,37 +117,42 @@ def send_like():
 
     results = []
     failed_tokens = set()
-    success_count = 0
-    max_success = 100
-    daily_limit_reached = False
+    likes_sent = 0
+    max_likes = 120
 
     def worker(token):
-        nonlocal success_count, daily_limit_reached
-        if token in failed_tokens or success_count >= max_success or daily_limit_reached:
+        nonlocal likes_sent
+        if token in failed_tokens:
             return None
+
+        with lock:
+            if likes_sent >= max_likes:
+                return None
 
         res = send_like_request(token, TARGET)
-
-        if res["daily_limit"]:
-            daily_limit_reached = True
-            return None
 
         if "failed" in res["status"] or "error" in res["status"]:
             failed_tokens.add(token)
             return None
 
-        success_count += 1
-        return res
+        with lock:
+            if likes_sent < max_likes:
+                likes_sent += 1
+                return res
+            else:
+                return None
 
     with ThreadPoolExecutor(max_workers=40) as executor:
-        for token in tokens:
-            if success_count >= max_success or daily_limit_reached:
-                break
-            result = executor.submit(worker, token).result()
+        futures = [executor.submit(worker, token) for token in tokens]
+
+        for future in futures:
+            result = future.result()
             if result:
                 results.append(result)
+            with lock:
+                if likes_sent >= max_likes:
+                    break
 
-    likes_sent = len(results)
     likes_after = likes_before + likes_sent
     last_sent_cache[player_id_int] = now
 
@@ -170,3 +166,5 @@ def send_like():
         "details": results
     })
 
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
