@@ -2,7 +2,8 @@ from flask import Flask, request, jsonify
 import httpx
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+import random
 import time
 
 app = Flask(__name__)
@@ -20,13 +21,15 @@ def Encrypt_ID(x):
             x = x / 128
             if x > 128:
                 x = x / 128
-                y = (x - int(x)) * 128
+                strx = int(x)
+                y = (x - int(strx)) * 128
                 z = (y - int(y)) * 128
                 n = (z - int(z)) * 128
                 m = (n - int(n)) * 128
                 return dec[int(m)] + dec[int(n)] + dec[int(z)] + dec[int(y)] + xxx[int(x)]
             else:
-                y = (x - int(x)) * 128
+                strx = int(x)
+                y = (x - int(strx)) * 128
                 z = (y - int(y)) * 128
                 n = (z - int(z)) * 128
                 return dec[int(n)] + dec[int(z)] + dec[int(y)] + xxx[int(x)]
@@ -44,6 +47,10 @@ def send_like_request(token, TARGET):
     headers = {
         'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)',
         'Connection': 'Keep-Alive',
+        'Expect': '100-continue',
+        'X-Unity-Version': '2018.4.11f1',
+        'X-GA': 'v1 1',
+        'ReleaseVersion': 'OB50',
         'Content-Type': 'application/x-www-form-urlencoded',
         'Authorization': f'Bearer {token}'
     }
@@ -57,11 +64,15 @@ def send_like_request(token, TARGET):
             except:
                 daily_limit = False
                 success = True
-            return success, daily_limit, token
+            return {
+                "token": token[:20] + "...",
+                "status": "success" if success else "failed",
+                "daily_limit": daily_limit
+            }
         else:
-            return False, False, token
-    except:
-        return False, False, token
+            return {"token": token[:20] + "...", "status": f"failed ({resp.status_code})", "daily_limit": False}
+    except httpx.RequestError as e:
+        return {"token": token[:20] + "...", "status": f"error ({e})", "daily_limit": False}
 
 @app.route("/send_like", methods=["GET"])
 def send_like():
@@ -76,58 +87,86 @@ def send_like():
         return jsonify({"error": "player_id must be an integer"}), 400
 
     now = time.time()
-    if now - last_sent_cache.get(player_id_int, 0) < 86400:
-        remaining = int(86400 - (now - last_sent_cache[player_id_int]))
-        return jsonify({"error": "Likes already sent", "seconds_until_next_allowed": remaining}), 429
+    last_sent = last_sent_cache.get(player_id_int, 0)
+    seconds_since_last = now - last_sent
 
-    # player info
-    info_url = f"https://razor-info.vercel.app/player-info?uid={player_id}&region=me"
-    resp = httpx.get(info_url, timeout=10)
-    if resp.status_code != 200:
-        return jsonify({"error": "Failed to fetch player info"}), 500
-    basic_info = resp.json().get("basicInfo", {})
-    player_name = basic_info.get("nickname", "Unknown")
-    player_uid = basic_info.get("accountId", player_id_int)
-    likes_before = basic_info.get("liked", 0)
+    if seconds_since_last < 86400:
+        remaining = int(86400 - seconds_since_last)
+        return jsonify({
+            "error": "Likes already sent within last 24 hours",
+            "seconds_until_next_allowed": remaining
+        }), 429
 
-    # tokens
-    token_data = httpx.get("https://auto-token-bngx.onrender.com/api/get_jwt", timeout=15).json()
-    tokens = token_data.get("tokens", [])
-    if not tokens:
-        return jsonify({"error": "No tokens found"}), 500
+    # جلب معلومات اللاعب
+    try:
+        info_url = f"https://razor-info.vercel.app/player-info?uid={player_id}&region=me"
+        resp = httpx.get(info_url, timeout=10)
+        if resp.status_code != 200:
+            return jsonify({"error": "Failed to fetch player info"}), 500
+        info_json = resp.json()
+        basic_info = info_json.get("basicInfo", {})
+        player_name = basic_info.get("nickname", "Unknown")
+        player_uid = basic_info.get("accountId", player_id_int)
+        likes_before = basic_info.get("liked", 0)
+    except Exception as e:
+        return jsonify({"error": f"Error fetching player info: {e}"}), 500
+
+    # جلب كل التوكنات
+    try:
+        token_data = httpx.get("https://auto-token-bngx.onrender.com/api/get_jwt", timeout=15).json()
+        tokens = token_data.get("tokens", [])
+        if not tokens:
+            return jsonify({"error": "No tokens found"}), 500
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch tokens: {e}"}), 500
 
     encrypted_id = Encrypt_ID(player_uid)
     encrypted_api_data = encrypt_api(f"08{encrypted_id}1007")
     TARGET = bytes.fromhex(encrypted_api_data)
 
-    success_count = 0
-    max_success = 127
-    daily_limit_reached = False
     results = []
+    failed_tokens = set()
+    success_count = 0
+    max_success = 100
+    daily_limit_reached = False
+
+    def worker(token):
+        nonlocal success_count, daily_limit_reached
+        if token in failed_tokens or success_count >= max_success or daily_limit_reached:
+            return None
+
+        res = send_like_request(token, TARGET)
+
+        if res["daily_limit"]:
+            daily_limit_reached = True
+            return None
+
+        if "failed" in res["status"] or "error" in res["status"]:
+            failed_tokens.add(token)
+            return None
+
+        success_count += 1
+        return res
 
     with ThreadPoolExecutor(max_workers=40) as executor:
-        futures = {executor.submit(send_like_request, token, TARGET): token for token in tokens}
-        for future in as_completed(futures):
-            success, daily_limit, token = future.result()
-            if daily_limit:
-                daily_limit_reached = True
+        for token in tokens:
+            if success_count >= max_success or daily_limit_reached:
                 break
-            if success:
-                success_count += 1
-                results.append({"token": token[:20] + "...", "status": "success"})
-            if success_count >= max_success:
-                break
+            result = executor.submit(worker, token).result()
+            if result:
+                results.append(result)
 
-    likes_after = likes_before + success_count
+    likes_sent = len(results)
+    likes_after = likes_before + likes_sent
     last_sent_cache[player_id_int] = now
 
     return jsonify({
         "player_id": player_uid,
         "player_name": player_name,
         "likes_before": likes_before,
-        "likes_added": success_count,
+        "likes_added": likes_sent,
         "likes_after": likes_after,
-        "daily_limit_reached": daily_limit_reached,
+        "seconds_until_next_allowed": 86400,
         "details": results
     })
 
