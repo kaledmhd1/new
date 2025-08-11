@@ -108,6 +108,7 @@ def send_like():
         tokens = token_data.get("tokens", [])
         if not tokens:
             return jsonify({"error": "No tokens found"}), 500
+        random.shuffle(tokens)  # << خلط التوكنات عشوائياً
     except Exception as e:
         return jsonify({"error": f"Failed to fetch tokens: {e}"}), 500
 
@@ -165,6 +166,3 @@ def send_like():
         "seconds_until_next_allowed": 86400,
         "details": results
     })
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
