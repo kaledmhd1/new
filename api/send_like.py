@@ -81,24 +81,24 @@ def send_like():
     last_sent = last_sent_cache.get(player_id_int, 0)
     seconds_since_last = now - last_sent
 
-    if seconds_since_last < 86400:  # 24 ساعة = 86400 ثانية
+    if seconds_since_last < 86400:  # 24 ساعة
         remaining = int(86400 - seconds_since_last)
         return jsonify({
             "error": "Likes already sent within last 24 hours",
             "seconds_until_next_allowed": remaining
         }), 429
 
-    # جلب معلومات اللاعب
+    # جلب معلومات اللاعب من الرابط الجديد
     try:
-        info_url = f"https://razor-info.vercel.app/player-info?uid={player_id}&region=me"
+        info_url = f"https://infor-bngx-ff.vercel.app/get?uid={player_id}"
         resp = httpx.get(info_url, timeout=10)
         if resp.status_code != 200:
             return jsonify({"error": "Failed to fetch player info"}), 500
         info_json = resp.json()
-        basic_info = info_json.get("basicInfo", {})
-        player_name = basic_info.get("nickname", "Unknown")
-        player_uid = basic_info.get("accountId", player_id_int)
-        likes_before = basic_info.get("liked", 0)  # عدّل هنا حسب رد API
+        account_info = info_json.get("AccountInfo", {})
+        player_name = account_info.get("AccountName", "Unknown")
+        player_uid = account_info.get("accountId", player_id_int)
+        likes_before = account_info.get("AccountLikes", 0)
     except Exception as e:
         return jsonify({"error": f"Error fetching player info: {e}"}), 500
 
@@ -108,7 +108,7 @@ def send_like():
         tokens = token_data.get("tokens", [])
         if not tokens:
             return jsonify({"error": "No tokens found"}), 500
-        random.shuffle(tokens)  # << خلط التوكنات عشوائياً
+        random.shuffle(tokens)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch tokens: {e}"}), 500
 
@@ -166,3 +166,4 @@ def send_like():
         "seconds_until_next_allowed": 86400,
         "details": results
     })
+
